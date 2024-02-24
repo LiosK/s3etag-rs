@@ -9,6 +9,7 @@ repository = "https://github.com/LiosK/s3etag-rs"
 publish = false
 
 [dependencies]
+arrayvec = "0.7"
 clap = "4.5"
 md-5 = "0.10"
 memmap2 = "0.9"

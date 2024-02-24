@@ -88,12 +88,7 @@ fn process_file(
         io::copy(&mut file, &mut hasher)?;
     }
 
-    let (n_chunks, digest) = hasher.finalize();
-    if n_chunks > 1 {
-        write!(writer, "{:032x}-{:<6} ", digest, n_chunks)?;
-    } else {
-        write!(writer, "{:032x}        ", digest)?;
-    }
+    write!(writer, "{:<39} ", hasher.finalize())?;
 
     #[cfg(unix)]
     writer.write_all(filename.as_os_str().as_bytes())?;
@@ -104,7 +99,7 @@ fn process_file(
 }
 
 trait Md5Hasher: Default {
-    type Output: AsRef<[u8]> + Into<[u8; 16]> + fmt::LowerHex;
+    type Output: AsRef<[u8]> + Into<[u8; 16]>;
 
     fn update(&mut self, data: impl AsRef<[u8]>);
 
@@ -150,17 +145,32 @@ impl<H: Md5Hasher> EtagHasher<H> {
         self.current_capacity -= buf.len();
     }
 
-    fn finalize(mut self) -> (usize, impl fmt::LowerHex) {
+    fn finalize(mut self) -> impl fmt::Display {
+        struct Etag<D>(D, usize);
+        impl<D: AsRef<[u8]>> fmt::Display for Etag<D> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                use fmt::Write as _;
+                let mut buf = arrayvec::ArrayString::<64>::new();
+                for e in self.0.as_ref() {
+                    write!(buf, "{:02x}", e)?;
+                }
+                if self.1 > 1 {
+                    write!(buf, "-{}", self.1)?;
+                }
+                fmt::Display::fmt(buf.as_str(), f)
+            }
+        }
+
         assert!(self.current_capacity <= self.chunksize.into());
         let has_partial_chunk = self.current_capacity < self.chunksize.into();
         if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            (1, self.hasher_chunk.finalize())
+            Etag(self.hasher_chunk.finalize(), 1)
         } else {
             if has_partial_chunk {
                 self.n_chunks += 1;
                 self.hasher_whole.update(self.hasher_chunk.finalize());
             }
-            (self.n_chunks, self.hasher_whole.finalize())
+            Etag(self.hasher_whole.finalize(), self.n_chunks)
         }
     }
 }
