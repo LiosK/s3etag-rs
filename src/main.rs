@@ -1,9 +1,8 @@
-use std::{error, fmt, fs, io, num::NonZeroUsize, path, process};
+use std::num::NonZeroUsize;
+use std::{error, fmt, fs, io, mem, path, process};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
-
-use md5::Digest as _;
 
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
@@ -39,7 +38,7 @@ fn main() -> process::ExitCode {
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
     let use_mmap = *matches.get_one::<bool>("use_mmap").unwrap_or(&false);
     for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
-        let hasher = EtagHasher::new(chunksize);
+        let hasher = EtagHasher::<md5::Md5>::new(chunksize);
         if let Err(e) = process_file(filename, hasher, &mut writer, use_mmap) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
@@ -74,7 +73,7 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
 /// Computes and prints the Etag for a file.
 fn process_file(
     filename: &path::Path,
-    mut hasher: EtagHasher,
+    mut hasher: EtagHasher<impl Md5Hasher>,
     writer: &mut impl io::Write,
     use_mmap: bool,
 ) -> io::Result<()> {
@@ -89,12 +88,7 @@ fn process_file(
         io::copy(&mut file, &mut hasher)?;
     }
 
-    let (n_chunks, digest) = hasher.finalize();
-    if n_chunks > 1 {
-        write!(writer, "{:032x}-{:<6} ", digest, n_chunks)?;
-    } else {
-        write!(writer, "{:032x}        ", digest)?;
-    }
+    write!(writer, "{:<39} ", hasher.finalize())?;
 
     #[cfg(unix)]
     writer.write_all(filename.as_os_str().as_bytes())?;
@@ -104,22 +98,34 @@ fn process_file(
     writer.write_all(b"\n")
 }
 
+trait Md5Hasher: Default {
+    type Output: AsRef<[u8]> + Into<[u8; 16]>;
+
+    fn update(&mut self, data: impl AsRef<[u8]>);
+
+    fn finalize(self) -> Self::Output;
+
+    fn finalize_reset(&mut self) -> Self::Output {
+        mem::take(self).finalize()
+    }
+}
+
 #[derive(Debug)]
-struct EtagHasher {
+struct EtagHasher<H> {
     chunksize: NonZeroUsize,
     n_chunks: usize,
-    hasher_whole: md5::Md5,
-    hasher_chunk: md5::Md5,
+    hasher_whole: H,
+    hasher_chunk: H,
     current_capacity: usize,
 }
 
-impl EtagHasher {
+impl<H: Md5Hasher> EtagHasher<H> {
     fn new(chunksize: NonZeroUsize) -> Self {
         Self {
             chunksize,
             n_chunks: 0,
-            hasher_whole: md5::Md5::new(),
-            hasher_chunk: md5::Md5::new(),
+            hasher_whole: Default::default(),
+            hasher_chunk: Default::default(),
             current_capacity: chunksize.into(),
         }
     }
@@ -139,22 +145,37 @@ impl EtagHasher {
         self.current_capacity -= buf.len();
     }
 
-    fn finalize(mut self) -> (usize, impl fmt::LowerHex) {
+    fn finalize(mut self) -> impl fmt::Display {
+        struct Etag<D>(D, usize);
+        impl<D: AsRef<[u8]>> fmt::Display for Etag<D> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                use fmt::Write as _;
+                let mut buf = arrayvec::ArrayString::<64>::new();
+                for e in self.0.as_ref() {
+                    write!(buf, "{:02x}", e)?;
+                }
+                if self.1 > 1 {
+                    write!(buf, "-{}", self.1)?;
+                }
+                fmt::Display::fmt(buf.as_str(), f)
+            }
+        }
+
         assert!(self.current_capacity <= self.chunksize.into());
         let has_partial_chunk = self.current_capacity < self.chunksize.into();
         if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            (1, self.hasher_chunk.finalize())
+            Etag(self.hasher_chunk.finalize(), 1)
         } else {
             if has_partial_chunk {
                 self.n_chunks += 1;
                 self.hasher_whole.update(self.hasher_chunk.finalize());
             }
-            (self.n_chunks, self.hasher_whole.finalize())
+            Etag(self.hasher_whole.finalize(), self.n_chunks)
         }
     }
 }
 
-impl io::Write for EtagHasher {
+impl<H: Md5Hasher> io::Write for EtagHasher<H> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.update(buf);
         Ok(buf.len())
@@ -162,5 +183,21 @@ impl io::Write for EtagHasher {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl Md5Hasher for md5::Md5 {
+    type Output = md5::digest::Output<Self>;
+
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        md5::Digest::update(self, data)
+    }
+
+    fn finalize(self) -> Self::Output {
+        md5::Digest::finalize(self)
+    }
+
+    fn finalize_reset(&mut self) -> Self::Output {
+        md5::Digest::finalize_reset(self)
     }
 }
