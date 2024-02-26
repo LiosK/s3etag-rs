@@ -53,7 +53,7 @@ const CHUNKSIZE_HELP: &str =
 /// Parses the chunksize argument.
 fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
-        None => (s, Ok(1)),
+        None => (s, Ok(1usize)),
         Some(pos) => (
             &s[..pos],
             match &s[pos..] {
@@ -66,7 +66,7 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
         ),
     };
     num.parse::<NonZeroUsize>()?
-        .checked_mul(unit?.try_into().unwrap())
+        .checked_mul(unit?.try_into()?)
         .ok_or_else(|| "too large chunksize".to_owned().into())
 }
 
