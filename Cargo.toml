@@ -1,6 +1,6 @@
 [package]
 name = "s3etag"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2021"
@@ -8,11 +8,16 @@ description = "Compute AWS S3 Etags"
 repository = "https://github.com/LiosK/s3etag-rs"
 publish = false
 
+[features]
+# use libssl instead of pure Rust MD5 implementation
+libssl = ["dep:openssl"]
+
 [dependencies]
 arrayvec = "0.7"
 clap = "4.5"
 md-5 = "0.10"
 memmap2 = "0.9"
+openssl = { version = "0.10", optional = true }
 
 [profile.release]
 lto = true

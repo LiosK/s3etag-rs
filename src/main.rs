@@ -38,7 +38,11 @@ fn main() -> process::ExitCode {
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
     let use_mmap = *matches.get_one::<bool>("use_mmap").unwrap_or(&false);
     for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
+        #[cfg(feature = "libssl")]
+        let hasher = EtagHasher::<libssl::Md5>::new(chunksize);
+        #[cfg(not(feature = "libssl"))]
         let hasher = EtagHasher::<md5::Md5>::new(chunksize);
+
         if let Err(e) = process_file(filename, hasher, &mut writer, use_mmap) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
@@ -53,7 +57,7 @@ const CHUNKSIZE_HELP: &str =
 /// Parses the chunksize argument.
 fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
-        None => (s, Ok(1)),
+        None => (s, Ok(1usize)),
         Some(pos) => (
             &s[..pos],
             match &s[pos..] {
@@ -66,7 +70,7 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
         ),
     };
     num.parse::<NonZeroUsize>()?
-        .checked_mul(unit?.try_into().unwrap())
+        .checked_mul(unit?.try_into()?)
         .ok_or_else(|| "too large chunksize".to_owned().into())
 }
 
@@ -186,6 +190,36 @@ impl<H: Md5Hasher> io::Write for EtagHasher<H> {
     }
 }
 
+#[cfg(feature = "libssl")]
+mod libssl {
+    use openssl::{md::Md, md_ctx::MdCtx};
+
+    pub struct Md5(MdCtx);
+
+    impl Default for Md5 {
+        fn default() -> Self {
+            let mut ctx = MdCtx::new().expect("libssl error");
+            ctx.digest_init(Md::md5()).expect("libssl error");
+            Self(ctx)
+        }
+    }
+
+    impl super::Md5Hasher for Md5 {
+        type Output = [u8; 16];
+
+        fn update(&mut self, data: impl AsRef<[u8]>) {
+            self.0.digest_update(data.as_ref()).expect("libssl error");
+        }
+
+        fn finalize(mut self) -> Self::Output {
+            let mut buffer = [0; 16];
+            self.0.digest_final(&mut buffer).expect("libssl error");
+            buffer
+        }
+    }
+}
+
+#[cfg(not(feature = "libssl"))]
 impl Md5Hasher for md5::Md5 {
     type Output = md5::digest::Output<Self>;
 
