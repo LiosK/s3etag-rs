@@ -35,15 +35,18 @@ fn main() -> process::ExitCode {
 
     let mut exit_code = process::ExitCode::SUCCESS;
     let mut writer = io::LineWriter::new(io::stdout().lock());
+    let mut buffer = match matches.get_one("use_mmap") {
+        Some(&true) => None,
+        _ => Some(vec![0u8; 64 * 1024].into_boxed_slice()),
+    };
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
-    let use_mmap = *matches.get_one::<bool>("use_mmap").unwrap_or(&false);
     for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
         #[cfg(feature = "libssl")]
         let hasher = EtagHasher::<libssl::Md5>::new(chunksize);
         #[cfg(not(feature = "libssl"))]
         let hasher = EtagHasher::<md5::Md5>::new(chunksize);
 
-        if let Err(e) = process_file(filename, hasher, &mut writer, use_mmap) {
+        if let Err(e) = process_file(filename, hasher, &mut writer, buffer.as_deref_mut()) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
         }
@@ -79,17 +82,27 @@ fn process_file(
     filename: &path::Path,
     mut hasher: EtagHasher<impl Md5Hasher>,
     writer: &mut impl io::Write,
-    use_mmap: bool,
+    fread_buffer: Option<&mut [u8]>,
 ) -> io::Result<()> {
     let mut file = fs::File::open(filename)?;
 
-    if use_mmap {
-        let mm = unsafe { memmap2::Mmap::map(&file)? };
-        #[cfg(unix)]
-        mm.advise(memmap2::Advice::Sequential)?;
-        hasher.update(mm);
-    } else {
-        io::copy(&mut file, &mut hasher)?;
+    match fread_buffer {
+        // use mmap if no buffer is supplied
+        None => {
+            let mm = unsafe { memmap2::Mmap::map(&file)? };
+            #[cfg(unix)]
+            mm.advise(memmap2::Advice::Sequential)?;
+            hasher.update(mm);
+        }
+        // use fread otherwise
+        Some(buffer) => loop {
+            match io::Read::read(&mut file, buffer) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => return Err(e),
+            }
+        },
     }
 
     write!(writer, "{:<39} ", hasher.finalize())?;
@@ -176,17 +189,6 @@ impl<H: Md5Hasher> EtagHasher<H> {
             }
             Etag(self.hasher_whole.finalize(), self.n_chunks)
         }
-    }
-}
-
-impl<H: Md5Hasher> io::Write for EtagHasher<H> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 
