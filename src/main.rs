@@ -86,14 +86,24 @@ fn process_file(
 ) -> io::Result<()> {
     let mut file = fs::File::open(filename)?;
 
+    #[cfg(any(
+        linux_android,
+        target_os = "emscripten",
+        target_os = "fuchsia",
+        target_os = "wasi",
+        target_env = "uclibc",
+        target_os = "freebsd"
+    ))]
+    nix::fcntl::posix_fadvise(
+        std::os::fd::AsRawFd::as_raw_fd(file),
+        0,
+        0,
+        nix::fcntl::PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL,
+    )?;
+
     match fread_buffer {
         // use mmap if no buffer is supplied
-        None => {
-            let mm = unsafe { memmap2::Mmap::map(&file)? };
-            #[cfg(unix)]
-            mm.advise(memmap2::Advice::Sequential)?;
-            hasher.update(mm);
-        }
+        None => hasher.update(unsafe { memmap2::Mmap::map(&file)? }),
         // use fread otherwise
         Some(buffer) => loop {
             match io::Read::read(&mut file, buffer) {

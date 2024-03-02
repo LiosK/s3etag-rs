@@ -17,6 +17,7 @@ arrayvec = "0.7"
 clap = "4.5"
 md-5 = "0.10"
 memmap2 = "0.9"
+nix = { version = "0.28", features = ["fs"] }
 openssl = { version = "0.10", optional = true }
 
 [profile.release]
