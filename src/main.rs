@@ -1,8 +1,10 @@
 use std::num::NonZeroUsize;
-use std::{error, fmt, fs, io, mem, path, process};
+use std::{error, fmt, fs, io, path, process};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
+
+use s3etag::Md5Hasher;
 
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
@@ -41,11 +43,7 @@ fn main() -> process::ExitCode {
     };
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
     for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
-        #[cfg(feature = "libssl")]
-        let hasher = EtagHasher::<libssl::Md5>::new(chunksize);
-        #[cfg(not(feature = "libssl"))]
-        let hasher = EtagHasher::<md5::Md5>::new(chunksize);
-
+        let hasher = EtagHasher::<md5_impl::Md5>::new(chunksize);
         if let Err(e) = process_file(filename, hasher, &mut writer, buffer.as_deref_mut()) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
@@ -125,18 +123,6 @@ fn process_file(
     writer.write_all(b"\n")
 }
 
-trait Md5Hasher: Default {
-    type Output: AsRef<[u8]> + Into<[u8; 16]>;
-
-    fn update(&mut self, data: impl AsRef<[u8]>);
-
-    fn finalize(self) -> Self::Output;
-
-    fn finalize_reset(&mut self) -> Self::Output {
-        mem::take(self).finalize()
-    }
-}
-
 #[derive(Debug)]
 struct EtagHasher<H> {
     chunksize: NonZeroUsize,
@@ -202,8 +188,8 @@ impl<H: Md5Hasher> EtagHasher<H> {
     }
 }
 
-#[cfg(feature = "libssl")]
-mod libssl {
+#[cfg(feature = "openssl")]
+mod md5_impl {
     use openssl::{md::Md, md_ctx::MdCtx};
 
     pub struct Md5(MdCtx);
@@ -231,19 +217,7 @@ mod libssl {
     }
 }
 
-#[cfg(not(feature = "libssl"))]
-impl Md5Hasher for md5::Md5 {
-    type Output = md5::digest::Output<Self>;
-
-    fn update(&mut self, data: impl AsRef<[u8]>) {
-        md5::Digest::update(self, data)
-    }
-
-    fn finalize(self) -> Self::Output {
-        md5::Digest::finalize(self)
-    }
-
-    fn finalize_reset(&mut self) -> Self::Output {
-        md5::Digest::finalize_reset(self)
-    }
+#[cfg(not(feature = "openssl"))]
+mod md5_impl {
+    pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
 }
