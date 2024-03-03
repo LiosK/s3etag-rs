@@ -1,11 +1,15 @@
 use std::num::NonZeroUsize;
-use std::{error, fmt, fs, io, mem, path, process};
+use std::{error, fs, io, path, process};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
+use s3etag::{EtagHasherMulti, Md5Hasher};
+
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
+    const CHUNKSIZE_HELP: &str =
+        "multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB";
     let matches = clap::Command::new(PROG)
         .version(env!("CARGO_PKG_VERSION"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
@@ -41,11 +45,7 @@ fn main() -> process::ExitCode {
     };
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
     for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
-        #[cfg(feature = "libssl")]
-        let hasher = EtagHasher::<libssl::Md5>::new(chunksize);
-        #[cfg(not(feature = "libssl"))]
-        let hasher = EtagHasher::<md5::Md5>::new(chunksize);
-
+        let hasher = EtagHasherMulti::<md5_impl::Md5>::new(chunksize);
         if let Err(e) = process_file(filename, hasher, &mut writer, buffer.as_deref_mut()) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
@@ -53,9 +53,6 @@ fn main() -> process::ExitCode {
     }
     exit_code
 }
-
-const CHUNKSIZE_HELP: &str =
-    "multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB";
 
 /// Parses the chunksize argument.
 fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync + Send>> {
@@ -80,7 +77,7 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
 /// Computes and prints the Etag for a file.
 fn process_file(
     filename: &path::Path,
-    mut hasher: EtagHasher<impl Md5Hasher>,
+    mut hasher: EtagHasherMulti<impl Md5Hasher>,
     writer: &mut impl io::Write,
     fread_buffer: Option<&mut [u8]>,
 ) -> io::Result<()> {
@@ -125,85 +122,8 @@ fn process_file(
     writer.write_all(b"\n")
 }
 
-trait Md5Hasher: Default {
-    type Output: AsRef<[u8]> + Into<[u8; 16]>;
-
-    fn update(&mut self, data: impl AsRef<[u8]>);
-
-    fn finalize(self) -> Self::Output;
-
-    fn finalize_reset(&mut self) -> Self::Output {
-        mem::take(self).finalize()
-    }
-}
-
-#[derive(Debug)]
-struct EtagHasher<H> {
-    chunksize: NonZeroUsize,
-    n_chunks: usize,
-    hasher_whole: H,
-    hasher_chunk: H,
-    current_capacity: usize,
-}
-
-impl<H: Md5Hasher> EtagHasher<H> {
-    fn new(chunksize: NonZeroUsize) -> Self {
-        Self {
-            chunksize,
-            n_chunks: 0,
-            hasher_whole: Default::default(),
-            hasher_chunk: Default::default(),
-            current_capacity: chunksize.into(),
-        }
-    }
-
-    fn update(&mut self, data: impl AsRef<[u8]>) {
-        let mut buf = data.as_ref();
-        assert!(self.current_capacity > 0);
-        while buf.len() >= self.current_capacity {
-            let used = self.current_capacity;
-            self.hasher_chunk.update(&buf[..used]);
-            self.n_chunks += 1;
-            self.hasher_whole.update(self.hasher_chunk.finalize_reset());
-            self.current_capacity = self.chunksize.into();
-            buf = &buf[used..];
-        }
-        self.hasher_chunk.update(buf);
-        self.current_capacity -= buf.len();
-    }
-
-    fn finalize(mut self) -> impl fmt::Display {
-        struct Etag<D>(D, usize);
-        impl<D: AsRef<[u8]>> fmt::Display for Etag<D> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                use fmt::Write as _;
-                let mut buf = arrayvec::ArrayString::<64>::new();
-                for e in self.0.as_ref() {
-                    write!(buf, "{:02x}", e)?;
-                }
-                if self.1 > 1 {
-                    write!(buf, "-{}", self.1)?;
-                }
-                fmt::Display::fmt(buf.as_str(), f)
-            }
-        }
-
-        assert!(self.current_capacity <= self.chunksize.into());
-        let has_partial_chunk = self.current_capacity < self.chunksize.into();
-        if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            Etag(self.hasher_chunk.finalize(), 1)
-        } else {
-            if has_partial_chunk {
-                self.n_chunks += 1;
-                self.hasher_whole.update(self.hasher_chunk.finalize());
-            }
-            Etag(self.hasher_whole.finalize(), self.n_chunks)
-        }
-    }
-}
-
-#[cfg(feature = "libssl")]
-mod libssl {
+#[cfg(feature = "openssl")]
+mod md5_impl {
     use openssl::{md::Md, md_ctx::MdCtx};
 
     pub struct Md5(MdCtx);
@@ -231,19 +151,7 @@ mod libssl {
     }
 }
 
-#[cfg(not(feature = "libssl"))]
-impl Md5Hasher for md5::Md5 {
-    type Output = md5::digest::Output<Self>;
-
-    fn update(&mut self, data: impl AsRef<[u8]>) {
-        md5::Digest::update(self, data)
-    }
-
-    fn finalize(self) -> Self::Output {
-        md5::Digest::finalize(self)
-    }
-
-    fn finalize_reset(&mut self) -> Self::Output {
-        md5::Digest::finalize_reset(self)
-    }
+#[cfg(not(feature = "openssl"))]
+mod md5_impl {
+    pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
 }
