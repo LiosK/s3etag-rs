@@ -1,6 +1,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{fmt, mem, num};
+use std::{fmt, mem, num::NonZeroUsize};
+
+use arrayvec::ArrayString;
 
 /// A trait that defines the minimum requirements for an underlying MD5 hasher.
 pub trait Md5Hasher: Default {
@@ -39,7 +41,7 @@ impl Md5Hasher for md5::Md5 {
 /// A hasher state for ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
 pub struct ETagHasherMulti<H> {
-    chunksize: num::NonZeroUsize,
+    chunksize: NonZeroUsize,
     n_chunks: usize,
     hasher_whole: H,
     hasher_chunk: H,
@@ -48,7 +50,7 @@ pub struct ETagHasherMulti<H> {
 
 impl<H: Md5Hasher> ETagHasherMulti<H> {
     /// Creates a new hasher configured for a `multipart_chunksize` value.
-    pub fn new(chunksize: num::NonZeroUsize) -> Self {
+    pub fn new(chunksize: NonZeroUsize) -> Self {
         Self {
             chunksize,
             n_chunks: 0,
@@ -77,35 +79,50 @@ impl<H: Md5Hasher> ETagHasherMulti<H> {
     }
 
     /// Returns the result, consuming the hasher.
-    pub fn finalize(mut self) -> ETag<impl AsRef<[u8]>> {
+    pub fn finalize(mut self) -> ETag {
         assert!(self.current_capacity <= self.chunksize.into());
         let has_partial_chunk = self.current_capacity < self.chunksize.into();
         if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            ETag(self.hasher_chunk.finalize(), 1)
+            ETag::from(self.hasher_chunk.finalize().into())
         } else {
             if has_partial_chunk {
                 self.n_chunks += 1;
                 self.hasher_whole.update(self.hasher_chunk.finalize());
             }
-            ETag(self.hasher_whole.finalize(), self.n_chunks)
+            ETag {
+                digest: self.hasher_whole.finalize().into(),
+                n_chunks: Some(self.n_chunks.try_into().unwrap()),
+            }
         }
     }
 }
 
 /// The calculated ETag value type.
 #[derive(Debug)]
-pub struct ETag<D>(D, usize);
+pub struct ETag {
+    digest: [u8; 16],
+    n_chunks: Option<NonZeroUsize>,
+}
 
-impl<D: AsRef<[u8]>> fmt::Display for ETag<D> {
+impl fmt::Display for ETag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use fmt::Write as _;
-        let mut buf = arrayvec::ArrayString::<64>::new();
-        for e in self.0.as_ref() {
+        let mut buf = ArrayString::<64>::new();
+        for e in self.digest {
             write!(buf, "{:02x}", e)?;
         }
-        if self.1 > 1 {
-            write!(buf, "-{}", self.1)?;
+        if let Some(n) = self.n_chunks {
+            write!(buf, "-{}", n)?;
         }
         fmt::Display::fmt(buf.as_str(), f)
+    }
+}
+
+impl From<[u8; 16]> for ETag {
+    fn from(digest: [u8; 16]) -> Self {
+        Self {
+            digest,
+            n_chunks: None,
+        }
     }
 }
