@@ -44,9 +44,19 @@ fn main() -> process::ExitCode {
         _ => Some(vec![0u8; 64 * 1024].into_boxed_slice()),
     };
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
-    for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
+
+    let mut files = matches
+        .get_many::<path::PathBuf>("files")
+        .unwrap()
+        .map(|filename| (filename, open_and_fadvise_seq(filename)))
+        .fuse();
+
+    let mut next = files.next();
+    while let Some((filename, file)) = next {
+        next = files.next(); // announce the next file before processing the current one
+
         let hasher = EtagHasherMulti::<md5_impl::Md5>::new(chunksize);
-        if let Err(e) = process_file(filename, hasher, &mut writer, buffer.as_deref_mut()) {
+        if let Err(e) = process_file(filename, file, hasher, &mut writer, buffer.as_deref_mut()) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
         }
@@ -74,14 +84,9 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
         .ok_or_else(|| "too large chunksize".to_owned().into())
 }
 
-/// Computes and prints the Etag for a file.
-fn process_file(
-    filename: &path::Path,
-    mut hasher: EtagHasherMulti<impl Md5Hasher>,
-    writer: &mut impl io::Write,
-    fread_buffer: Option<&mut [u8]>,
-) -> io::Result<()> {
-    let mut file = fs::File::open(filename)?;
+/// Opens a file and calls `posix_fadvise` with `POSIX_FADV_SEQUENTIAL`.
+fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
+    let file = fs::File::open(filename)?;
 
     #[cfg(any(
         linux_android,
@@ -91,12 +96,31 @@ fn process_file(
         target_env = "uclibc",
         target_os = "freebsd"
     ))]
-    nix::fcntl::posix_fadvise(
+    if let Err(e) = nix::fcntl::posix_fadvise(
         std::os::fd::AsRawFd::as_raw_fd(file),
         0,
         0,
         nix::fcntl::PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL,
-    )?;
+    ) {
+        eprintln!(
+            "warning: {}: `posix_fadvise(2)` returned error: {}",
+            filename.display(),
+            e
+        );
+    }
+
+    Ok(file)
+}
+
+/// Computes and prints the Etag for a file.
+fn process_file(
+    filename: &path::Path,
+    file: io::Result<fs::File>,
+    mut hasher: EtagHasherMulti<impl Md5Hasher>,
+    writer: &mut impl io::Write,
+    fread_buffer: Option<&mut [u8]>,
+) -> io::Result<()> {
+    let mut file = file?;
 
     match fread_buffer {
         // use mmap if no buffer is supplied
