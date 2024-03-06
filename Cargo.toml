@@ -4,7 +4,7 @@ version = "0.2.0"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2021"
-description = "Compute AWS S3 Etags"
+description = "Compute Amazon S3 Etags"
 repository = "https://github.com/LiosK/s3etag-rs"
 publish = false
 

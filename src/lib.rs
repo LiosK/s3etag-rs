@@ -1,18 +1,25 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::{fmt, mem, num};
 
+/// A trait that defines the minimum requirements for an underlying MD5 hasher.
 pub trait Md5Hasher: Default {
     type Output: AsRef<[u8]> + Into<[u8; 16]>;
 
+    /// Updates the internal state by processing the data.
     fn update(&mut self, data: impl AsRef<[u8]>);
 
+    /// Returns the result, consuming the hasher.
     fn finalize(self) -> Self::Output;
 
+    /// Returns the result, reseting the hasher to the initial state.
     fn finalize_reset(&mut self) -> Self::Output {
         mem::take(self).finalize()
     }
 }
 
 #[cfg(feature = "md-5")]
+#[cfg_attr(docsrs, doc(cfg(feature = "md-5")))]
 impl Md5Hasher for md5::Md5 {
     type Output = md5::digest::Output<Self>;
 
@@ -29,6 +36,7 @@ impl Md5Hasher for md5::Md5 {
     }
 }
 
+/// A hasher state for Etag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
 pub struct EtagHasherMulti<H> {
     chunksize: num::NonZeroUsize,
@@ -39,6 +47,7 @@ pub struct EtagHasherMulti<H> {
 }
 
 impl<H: Md5Hasher> EtagHasherMulti<H> {
+    /// Creates a new hasher configured for a `multipart_chunksize` value.
     pub fn new(chunksize: num::NonZeroUsize) -> Self {
         Self {
             chunksize,
@@ -49,6 +58,7 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
         }
     }
 
+    /// Updates the internal state by processing the data.
     pub fn update(&mut self, data: impl AsRef<[u8]>) {
         let mut buf = data.as_ref();
         assert!(self.current_capacity > 0);
@@ -66,6 +76,7 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
         }
     }
 
+    /// Returns the result, consuming the hasher.
     pub fn finalize(mut self) -> Etag<impl AsRef<[u8]>> {
         assert!(self.current_capacity <= self.chunksize.into());
         let has_partial_chunk = self.current_capacity < self.chunksize.into();
@@ -81,6 +92,7 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
     }
 }
 
+/// The calculated Etag value type.
 #[derive(Debug)]
 pub struct Etag<D>(D, usize);
 
