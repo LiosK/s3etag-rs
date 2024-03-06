@@ -4,7 +4,7 @@ use std::{error, fs, io, path, process};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
-use s3etag::{EtagHasherMulti, Md5Hasher};
+use s3etag::{ETagHasherMulti, Md5Hasher};
 
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
@@ -55,7 +55,7 @@ fn main() -> process::ExitCode {
     while let Some((filename, file)) = next {
         next = files.next(); // announce the next file before processing the current one
 
-        let hasher = EtagHasherMulti::<md5_impl::Md5>::new(chunksize);
+        let hasher = ETagHasherMulti::<md5_impl::Md5>::new(chunksize);
         if let Err(e) = process_file(filename, file, hasher, &mut writer, buffer.as_deref_mut()) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
@@ -112,11 +112,11 @@ fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
-/// Computes and prints the Etag for a file.
+/// Computes and prints the ETag for a file.
 fn process_file(
     filename: &path::Path,
     file: io::Result<fs::File>,
-    mut hasher: EtagHasherMulti<impl Md5Hasher>,
+    mut hasher: ETagHasherMulti<impl Md5Hasher>,
     writer: &mut impl io::Write,
     fread_buffer: Option<&mut [u8]>,
 ) -> io::Result<()> {

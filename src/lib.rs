@@ -36,9 +36,9 @@ impl Md5Hasher for md5::Md5 {
     }
 }
 
-/// A hasher state for Etag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
+/// A hasher state for ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
-pub struct EtagHasherMulti<H> {
+pub struct ETagHasherMulti<H> {
     chunksize: num::NonZeroUsize,
     n_chunks: usize,
     hasher_whole: H,
@@ -46,7 +46,7 @@ pub struct EtagHasherMulti<H> {
     current_capacity: usize,
 }
 
-impl<H: Md5Hasher> EtagHasherMulti<H> {
+impl<H: Md5Hasher> ETagHasherMulti<H> {
     /// Creates a new hasher configured for a `multipart_chunksize` value.
     pub fn new(chunksize: num::NonZeroUsize) -> Self {
         Self {
@@ -77,26 +77,26 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
     }
 
     /// Returns the result, consuming the hasher.
-    pub fn finalize(mut self) -> Etag<impl AsRef<[u8]>> {
+    pub fn finalize(mut self) -> ETag<impl AsRef<[u8]>> {
         assert!(self.current_capacity <= self.chunksize.into());
         let has_partial_chunk = self.current_capacity < self.chunksize.into();
         if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            Etag(self.hasher_chunk.finalize(), 1)
+            ETag(self.hasher_chunk.finalize(), 1)
         } else {
             if has_partial_chunk {
                 self.n_chunks += 1;
                 self.hasher_whole.update(self.hasher_chunk.finalize());
             }
-            Etag(self.hasher_whole.finalize(), self.n_chunks)
+            ETag(self.hasher_whole.finalize(), self.n_chunks)
         }
     }
 }
 
-/// The calculated Etag value type.
+/// The calculated ETag value type.
 #[derive(Debug)]
-pub struct Etag<D>(D, usize);
+pub struct ETag<D>(D, usize);
 
-impl<D: AsRef<[u8]>> fmt::Display for Etag<D> {
+impl<D: AsRef<[u8]>> fmt::Display for ETag<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use fmt::Write as _;
         let mut buf = arrayvec::ArrayString::<64>::new();
