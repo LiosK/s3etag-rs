@@ -4,8 +4,6 @@ use std::{error, fs, io, path, process};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
-use s3etag::{ETagHasherMulti, Md5Hasher};
-
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
     const CHUNKSIZE_HELP: &str =
@@ -35,7 +33,9 @@ fn main() -> process::ExitCode {
     let mut writer = io::LineWriter::new(io::stdout().lock());
     let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
 
-    let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
+    let config = Config {
+        chunksize: *matches.get_one::<NonZeroUsize>("chunksize").unwrap(),
+    };
 
     let mut files = matches
         .get_many::<path::PathBuf>("files")
@@ -48,10 +48,9 @@ fn main() -> process::ExitCode {
         // announce the next file before processing the current one
         next = files.next();
 
-        let hasher = ETagHasherMulti::<md5_impl::Md5>::new(chunksize);
-        if let Err(e) = process_file(filename, file, hasher, &mut writer, &mut buffer) {
-            eprintln!("error: {}: {}", filename.display(), e);
+        if let Err(e) = process_file(filename, file, &config, &mut writer, &mut buffer) {
             exit_code = process::ExitCode::FAILURE;
+            eprintln!("error: {}: {}", filename.display(), e);
         }
     }
 
@@ -106,15 +105,21 @@ fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
+#[derive(Debug)]
+struct Config {
+    chunksize: NonZeroUsize,
+}
+
 /// Computes and prints the ETag for a file.
 fn process_file(
     filename: &path::Path,
     file: io::Result<fs::File>,
-    mut hasher: ETagHasherMulti<impl Md5Hasher>,
+    config: &Config,
     writer: &mut impl io::Write,
     buffer: &mut [u8],
 ) -> io::Result<()> {
     let mut file = file?;
+    let mut hasher = s3etag::ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
 
     let etag = loop {
         match io::Read::read(&mut file, buffer) {
@@ -149,7 +154,7 @@ mod md5_impl {
         }
     }
 
-    impl super::Md5Hasher for Md5 {
+    impl s3etag::Md5Hasher for Md5 {
         type Output = [u8; 16];
 
         fn update(&mut self, data: impl AsRef<[u8]>) {
