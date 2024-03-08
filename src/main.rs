@@ -29,20 +29,12 @@ fn main() -> process::ExitCode {
                 .default_value("8MB")
                 .help(CHUNKSIZE_HELP),
         )
-        .arg(
-            clap::Arg::new("use_mmap")
-                .long("no-mmap")
-                .action(clap::ArgAction::SetFalse)
-                .help("disable memory-mapped I/O in reading files"),
-        )
         .get_matches();
 
     let mut exit_code = process::ExitCode::SUCCESS;
     let mut writer = io::LineWriter::new(io::stdout().lock());
-    let mut buffer = match matches.get_one("use_mmap") {
-        Some(&true) => None,
-        _ => Some(vec![0u8; 64 * 1024].into_boxed_slice()),
-    };
+    let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+
     let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
 
     let mut files = matches
@@ -53,14 +45,16 @@ fn main() -> process::ExitCode {
 
     let mut next = files.next();
     while let Some((filename, file)) = next {
-        next = files.next(); // announce the next file before processing the current one
+        // announce the next file before processing the current one
+        next = files.next();
 
         let hasher = ETagHasherMulti::<md5_impl::Md5>::new(chunksize);
-        if let Err(e) = process_file(filename, file, hasher, &mut writer, buffer.as_deref_mut()) {
+        if let Err(e) = process_file(filename, file, hasher, &mut writer, &mut buffer) {
             eprintln!("error: {}: {}", filename.display(), e);
             exit_code = process::ExitCode::FAILURE;
         }
     }
+
     exit_code
 }
 
@@ -118,25 +112,20 @@ fn process_file(
     file: io::Result<fs::File>,
     mut hasher: ETagHasherMulti<impl Md5Hasher>,
     writer: &mut impl io::Write,
-    fread_buffer: Option<&mut [u8]>,
+    buffer: &mut [u8],
 ) -> io::Result<()> {
     let mut file = file?;
 
-    match fread_buffer {
-        // use mmap if no buffer is supplied
-        None => hasher.update(unsafe { memmap2::Mmap::map(&file)? }),
-        // use fread otherwise
-        Some(buffer) => loop {
-            match io::Read::read(&mut file, buffer) {
-                Ok(0) => break,
-                Ok(n) => hasher.update(&buffer[..n]),
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
-                Err(e) => return Err(e),
-            }
-        },
-    }
+    let etag = loop {
+        match io::Read::read(&mut file, buffer) {
+            Ok(0) => break Ok(hasher.finalize()),
+            Ok(n) => hasher.update(&buffer[..n]),
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+            Err(e) => break Err(e),
+        }
+    }?;
 
-    write!(writer, "{:<39} ", hasher.finalize())?;
+    write!(writer, "{:<39} ", etag)?;
 
     #[cfg(unix)]
     writer.write_all(filename.as_os_str().as_bytes())?;
