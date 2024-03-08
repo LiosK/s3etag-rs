@@ -38,7 +38,7 @@ impl Md5Hasher for md5::Md5 {
     }
 }
 
-/// A hasher state for ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
+/// A hasher state for multipart ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
 pub struct ETagHasherMulti<H> {
     chunksize: NonZeroUsize,
@@ -79,20 +79,19 @@ impl<H: Md5Hasher> ETagHasherMulti<H> {
     }
 
     /// Returns the result, consuming the hasher.
+    ///
+    /// Note that this method returns a non-multipart ETag if this hasher has not consumed any
+    /// byte. This is because awscli does not accept zero multipart_threshold, and thus multipart
+    /// uploading is not applicable to an empty file.
     pub fn finalize(mut self) -> ETag {
         assert!(self.current_capacity <= self.chunksize.into());
-        let has_partial_chunk = self.current_capacity < self.chunksize.into();
-        if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            ETag::from(self.hasher_chunk.finalize().into())
-        } else {
-            if has_partial_chunk {
-                self.n_chunks += 1;
-                self.hasher_whole.update(self.hasher_chunk.finalize());
-            }
-            ETag {
-                digest: self.hasher_whole.finalize().into(),
-                n_chunks: Some(self.n_chunks.try_into().unwrap()),
-            }
+        if self.current_capacity < self.chunksize.into() {
+            self.n_chunks += 1;
+            self.hasher_whole.update(self.hasher_chunk.finalize());
+        }
+        ETag {
+            digest: self.hasher_whole.finalize().into(),
+            n_chunks: self.n_chunks.try_into().ok(),
         }
     }
 }

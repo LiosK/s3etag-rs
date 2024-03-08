@@ -1,11 +1,15 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::{error, fs, io, path, process};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
+use s3etag::{ETagHasherMulti, Md5Hasher};
+
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
+    const THRESHOLD_HELP: &str =
+        "multipart_threshold used for upload in bytes or with a size suffix KB, MB, GB, or TB";
     const CHUNKSIZE_HELP: &str =
         "multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB";
     let matches = clap::Command::new(PROG)
@@ -18,6 +22,14 @@ fn main() -> process::ExitCode {
                 .value_parser(clap::value_parser!(path::PathBuf))
                 .action(clap::ArgAction::Append)
                 .help("filenames"),
+        )
+        .arg(
+            clap::Arg::new("threshold")
+                .long("threshold")
+                .value_name("SIZE")
+                .value_parser(parse_threshold)
+                .default_value("8MB")
+                .help(THRESHOLD_HELP),
         )
         .arg(
             clap::Arg::new("chunksize")
@@ -34,6 +46,7 @@ fn main() -> process::ExitCode {
     let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
 
     let config = Config {
+        threshold: *matches.get_one::<NonZeroU64>("threshold").unwrap(),
         chunksize: *matches.get_one::<NonZeroUsize>("chunksize").unwrap(),
     };
 
@@ -55,6 +68,26 @@ fn main() -> process::ExitCode {
     }
 
     exit_code
+}
+
+/// Parses the threshold argument.
+fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + Send>> {
+    let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        None => (s, Ok(1u64)),
+        Some(pos) => (
+            &s[..pos],
+            match &s[pos..] {
+                "KB" => Ok(1 << 10),
+                "MB" => Ok(1 << 20),
+                "GB" => Ok(1 << 30),
+                "TB" => Ok(1 << 40),
+                _ => Err("unknown size suffix".to_owned()),
+            },
+        ),
+    };
+    num.parse::<NonZeroU64>()?
+        .checked_mul(unit?.try_into()?)
+        .ok_or_else(|| "too large threshold".to_owned().into())
 }
 
 /// Parses the chunksize argument.
@@ -107,6 +140,7 @@ fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
 
 #[derive(Debug)]
 struct Config {
+    threshold: NonZeroU64,
     chunksize: NonZeroUsize,
 }
 
@@ -119,14 +153,26 @@ fn process_file(
     buffer: &mut [u8],
 ) -> io::Result<()> {
     let mut file = file?;
-    let mut hasher = s3etag::ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
 
-    let etag = loop {
-        match io::Read::read(&mut file, buffer) {
-            Ok(0) => break Ok(hasher.finalize()),
-            Ok(n) => hasher.update(&buffer[..n]),
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
-            Err(e) => break Err(e),
+    let etag = if file.metadata()?.len() < config.threshold.into() {
+        let mut hasher = md5_impl::Md5::default();
+        loop {
+            match io::Read::read(&mut file, buffer) {
+                Ok(0) => break Ok(<[u8; 16]>::from(hasher.finalize()).into()),
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => break Err(e),
+            }
+        }
+    } else {
+        let mut hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
+        loop {
+            match io::Read::read(&mut file, buffer) {
+                Ok(0) => break Ok(hasher.finalize()),
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => break Err(e),
+            }
         }
     }?;
 
@@ -154,7 +200,7 @@ mod md5_impl {
         }
     }
 
-    impl s3etag::Md5Hasher for Md5 {
+    impl super::Md5Hasher for Md5 {
         type Output = [u8; 16];
 
         fn update(&mut self, data: impl AsRef<[u8]>) {
