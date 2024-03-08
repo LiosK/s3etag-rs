@@ -1,13 +1,15 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::{error, fs, io, path, process};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
-use s3etag::{EtagHasherMulti, Md5Hasher};
+use s3etag::{ETagHasherMulti, Md5Hasher};
 
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
+    const THRESHOLD_HELP: &str =
+        "multipart_threshold used for upload in bytes or with a size suffix KB, MB, GB, or TB";
     const CHUNKSIZE_HELP: &str =
         "multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB";
     let matches = clap::Command::new(PROG)
@@ -22,6 +24,14 @@ fn main() -> process::ExitCode {
                 .help("filenames"),
         )
         .arg(
+            clap::Arg::new("threshold")
+                .long("threshold")
+                .value_name("SIZE")
+                .value_parser(parse_threshold)
+                .default_value("8MB")
+                .help(THRESHOLD_HELP),
+        )
+        .arg(
             clap::Arg::new("chunksize")
                 .long("chunksize")
                 .value_name("SIZE")
@@ -29,29 +39,55 @@ fn main() -> process::ExitCode {
                 .default_value("8MB")
                 .help(CHUNKSIZE_HELP),
         )
-        .arg(
-            clap::Arg::new("use_mmap")
-                .long("no-mmap")
-                .action(clap::ArgAction::SetFalse)
-                .help("disable memory-mapped I/O in reading files"),
-        )
         .get_matches();
 
     let mut exit_code = process::ExitCode::SUCCESS;
     let mut writer = io::LineWriter::new(io::stdout().lock());
-    let mut buffer = match matches.get_one("use_mmap") {
-        Some(&true) => None,
-        _ => Some(vec![0u8; 64 * 1024].into_boxed_slice()),
+    let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+
+    let config = Config {
+        threshold: *matches.get_one::<NonZeroU64>("threshold").unwrap(),
+        chunksize: *matches.get_one::<NonZeroUsize>("chunksize").unwrap(),
     };
-    let chunksize = *matches.get_one::<NonZeroUsize>("chunksize").unwrap();
-    for filename in matches.get_many::<path::PathBuf>("files").unwrap() {
-        let hasher = EtagHasherMulti::<md5_impl::Md5>::new(chunksize);
-        if let Err(e) = process_file(filename, hasher, &mut writer, buffer.as_deref_mut()) {
-            eprintln!("error: {}: {}", filename.display(), e);
+
+    let mut files = matches
+        .get_many::<path::PathBuf>("files")
+        .unwrap()
+        .map(|filename| (filename, open_and_fadvise_seq(filename)))
+        .fuse();
+
+    let mut next = files.next();
+    while let Some((filename, file)) = next {
+        // announce the next file before processing the current one
+        next = files.next();
+
+        if let Err(e) = process_file(filename, file, &config, &mut writer, &mut buffer) {
             exit_code = process::ExitCode::FAILURE;
+            eprintln!("error: {}: {}", filename.display(), e);
         }
     }
+
     exit_code
+}
+
+/// Parses the threshold argument.
+fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + Send>> {
+    let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        None => (s, Ok(1u64)),
+        Some(pos) => (
+            &s[..pos],
+            match &s[pos..] {
+                "KB" => Ok(1 << 10),
+                "MB" => Ok(1 << 20),
+                "GB" => Ok(1 << 30),
+                "TB" => Ok(1 << 40),
+                _ => Err("unknown size suffix".to_owned()),
+            },
+        ),
+    };
+    num.parse::<NonZeroU64>()?
+        .checked_mul(unit?.try_into()?)
+        .ok_or_else(|| "too large threshold".to_owned().into())
 }
 
 /// Parses the chunksize argument.
@@ -74,14 +110,9 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
         .ok_or_else(|| "too large chunksize".to_owned().into())
 }
 
-/// Computes and prints the Etag for a file.
-fn process_file(
-    filename: &path::Path,
-    mut hasher: EtagHasherMulti<impl Md5Hasher>,
-    writer: &mut impl io::Write,
-    fread_buffer: Option<&mut [u8]>,
-) -> io::Result<()> {
-    let mut file = fs::File::open(filename)?;
+/// Opens a file and calls `posix_fadvise` with `POSIX_FADV_SEQUENTIAL`.
+fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
+    let file = fs::File::open(filename)?;
 
     #[cfg(any(
         linux_android,
@@ -91,28 +122,61 @@ fn process_file(
         target_env = "uclibc",
         target_os = "freebsd"
     ))]
-    nix::fcntl::posix_fadvise(
+    if let Err(e) = nix::fcntl::posix_fadvise(
         std::os::fd::AsRawFd::as_raw_fd(file),
         0,
         0,
         nix::fcntl::PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL,
-    )?;
-
-    match fread_buffer {
-        // use mmap if no buffer is supplied
-        None => hasher.update(unsafe { memmap2::Mmap::map(&file)? }),
-        // use fread otherwise
-        Some(buffer) => loop {
-            match io::Read::read(&mut file, buffer) {
-                Ok(0) => break,
-                Ok(n) => hasher.update(&buffer[..n]),
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
-                Err(e) => return Err(e),
-            }
-        },
+    ) {
+        eprintln!(
+            "warning: {}: `posix_fadvise(2)` returned error: {}",
+            filename.display(),
+            e
+        );
     }
 
-    write!(writer, "{:<39} ", hasher.finalize())?;
+    Ok(file)
+}
+
+#[derive(Debug)]
+struct Config {
+    threshold: NonZeroU64,
+    chunksize: NonZeroUsize,
+}
+
+/// Computes and prints the ETag for a file.
+fn process_file(
+    filename: &path::Path,
+    file: io::Result<fs::File>,
+    config: &Config,
+    writer: &mut impl io::Write,
+    buffer: &mut [u8],
+) -> io::Result<()> {
+    let mut file = file?;
+
+    let etag = if file.metadata()?.len() < config.threshold.into() {
+        let mut hasher = md5_impl::Md5::default();
+        loop {
+            match io::Read::read(&mut file, buffer) {
+                Ok(0) => break Ok(<[u8; 16]>::from(hasher.finalize()).into()),
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => break Err(e),
+            }
+        }
+    } else {
+        let mut hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
+        loop {
+            match io::Read::read(&mut file, buffer) {
+                Ok(0) => break Ok(hasher.finalize()),
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => break Err(e),
+            }
+        }
+    }?;
+
+    write!(writer, "{:<39} ", etag)?;
 
     #[cfg(unix)]
     writer.write_all(filename.as_os_str().as_bytes())?;

@@ -1,18 +1,27 @@
-use std::{fmt, mem, num};
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
+use std::{fmt, mem, num::NonZeroUsize};
+
+use arrayvec::ArrayString;
+
+/// A trait that defines the minimum requirements for an underlying MD5 hasher.
 pub trait Md5Hasher: Default {
     type Output: AsRef<[u8]> + Into<[u8; 16]>;
 
+    /// Updates the internal state by processing the data.
     fn update(&mut self, data: impl AsRef<[u8]>);
 
+    /// Returns the result, consuming the hasher.
     fn finalize(self) -> Self::Output;
 
+    /// Returns the result, reseting the hasher to the initial state.
     fn finalize_reset(&mut self) -> Self::Output {
         mem::take(self).finalize()
     }
 }
 
 #[cfg(feature = "md-5")]
+#[cfg_attr(docsrs, doc(cfg(feature = "md-5")))]
 impl Md5Hasher for md5::Md5 {
     type Output = md5::digest::Output<Self>;
 
@@ -29,17 +38,19 @@ impl Md5Hasher for md5::Md5 {
     }
 }
 
+/// A hasher state for multipart ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
-pub struct EtagHasherMulti<H> {
-    chunksize: num::NonZeroUsize,
+pub struct ETagHasherMulti<H> {
+    chunksize: NonZeroUsize,
     n_chunks: usize,
     hasher_whole: H,
     hasher_chunk: H,
     current_capacity: usize,
 }
 
-impl<H: Md5Hasher> EtagHasherMulti<H> {
-    pub fn new(chunksize: num::NonZeroUsize) -> Self {
+impl<H: Md5Hasher> ETagHasherMulti<H> {
+    /// Creates a new hasher configured for a `multipart_chunksize` value.
+    pub fn new(chunksize: NonZeroUsize) -> Self {
         Self {
             chunksize,
             n_chunks: 0,
@@ -49,6 +60,7 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
         }
     }
 
+    /// Updates the internal state by processing the data.
     pub fn update(&mut self, data: impl AsRef<[u8]>) {
         let mut buf = data.as_ref();
         assert!(self.current_capacity > 0);
@@ -66,34 +78,50 @@ impl<H: Md5Hasher> EtagHasherMulti<H> {
         }
     }
 
-    pub fn finalize(mut self) -> Etag<impl AsRef<[u8]>> {
+    /// Returns the result, consuming the hasher.
+    ///
+    /// Note that this method returns a non-multipart ETag if this hasher has not consumed any
+    /// byte. This is because awscli does not accept zero multipart_threshold, and thus multipart
+    /// uploading is not applicable to an empty file.
+    pub fn finalize(mut self) -> ETag {
         assert!(self.current_capacity <= self.chunksize.into());
-        let has_partial_chunk = self.current_capacity < self.chunksize.into();
-        if self.n_chunks == 0 || (self.n_chunks == 1 && !has_partial_chunk) {
-            Etag(self.hasher_chunk.finalize(), 1)
-        } else {
-            if has_partial_chunk {
-                self.n_chunks += 1;
-                self.hasher_whole.update(self.hasher_chunk.finalize());
-            }
-            Etag(self.hasher_whole.finalize(), self.n_chunks)
+        if self.current_capacity < self.chunksize.into() {
+            self.n_chunks += 1;
+            self.hasher_whole.update(self.hasher_chunk.finalize());
+        }
+        ETag {
+            digest: self.hasher_whole.finalize().into(),
+            n_chunks: self.n_chunks.try_into().ok(),
         }
     }
 }
 
+/// The calculated ETag value type.
 #[derive(Debug)]
-pub struct Etag<D>(D, usize);
+pub struct ETag {
+    digest: [u8; 16],
+    n_chunks: Option<NonZeroUsize>,
+}
 
-impl<D: AsRef<[u8]>> fmt::Display for Etag<D> {
+impl fmt::Display for ETag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use fmt::Write as _;
-        let mut buf = arrayvec::ArrayString::<64>::new();
-        for e in self.0.as_ref() {
+        let mut buf = ArrayString::<64>::new();
+        for e in self.digest {
             write!(buf, "{:02x}", e)?;
         }
-        if self.1 > 1 {
-            write!(buf, "-{}", self.1)?;
+        if let Some(n) = self.n_chunks {
+            write!(buf, "-{}", n)?;
         }
         fmt::Display::fmt(buf.as_str(), f)
+    }
+}
+
+impl From<[u8; 16]> for ETag {
+    fn from(digest: [u8; 16]) -> Self {
+        Self {
+            digest,
+            n_chunks: None,
+        }
     }
 }
