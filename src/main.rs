@@ -4,7 +4,7 @@ use std::{error, fs, io, path, process};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
-use s3etag::{ETagHasherMulti, Md5Hasher};
+use s3etag::{ETag, ETagHasher, ETagHasherMulti};
 
 fn main() -> process::ExitCode {
     const PROG: &str = env!("CARGO_PKG_NAME");
@@ -152,27 +152,29 @@ fn process_file(
     writer: &mut impl io::Write,
     buffer: &mut [u8],
 ) -> io::Result<()> {
-    let mut file = file?;
-
-    let etag = if file.metadata()?.len() < config.threshold.into() {
-        let mut hasher = md5_impl::Md5::default();
-        loop {
-            match io::Read::read(&mut file, buffer) {
-                Ok(0) => break Ok(<[u8; 16]>::from(hasher.finalize()).into()),
-                Ok(n) => hasher.update(&buffer[..n]),
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
-                Err(e) => break Err(e),
+    let etag = {
+        fn compute_etag(
+            mut hasher: impl ETagHasher,
+            file: &mut fs::File,
+            buffer: &mut [u8],
+        ) -> io::Result<ETag> {
+            loop {
+                match io::Read::read(file, buffer) {
+                    Ok(0) => break Ok(hasher.finalize()),
+                    Ok(n) => hasher.update(&buffer[..n]),
+                    Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                    Err(e) => break Err(e),
+                }
             }
         }
-    } else {
-        let mut hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
-        loop {
-            match io::Read::read(&mut file, buffer) {
-                Ok(0) => break Ok(hasher.finalize()),
-                Ok(n) => hasher.update(&buffer[..n]),
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
-                Err(e) => break Err(e),
-            }
+
+        let mut file = file?;
+        if file.metadata()?.len() < config.threshold.into() {
+            let hasher = md5_impl::Md5::default();
+            compute_etag(hasher, &mut file, buffer)
+        } else {
+            let hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
+            compute_etag(hasher, &mut file, buffer)
         }
     }?;
 
@@ -200,7 +202,7 @@ mod md5_impl {
         }
     }
 
-    impl super::Md5Hasher for Md5 {
+    impl s3etag::Md5Hasher for Md5 {
         type Output = [u8; 16];
 
         fn update(&mut self, data: impl AsRef<[u8]>) {

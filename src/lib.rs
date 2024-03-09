@@ -38,6 +38,25 @@ impl Md5Hasher for md5::Md5 {
     }
 }
 
+/// A trait for ETag hasher states.
+pub trait ETagHasher {
+    /// Updates the internal state by processing the data.
+    fn update(&mut self, data: impl AsRef<[u8]>);
+
+    /// Returns the result, consuming the hasher.
+    fn finalize(self) -> ETag;
+}
+
+impl<T: Md5Hasher> ETagHasher for T {
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        self.update(data)
+    }
+
+    fn finalize(self) -> ETag {
+        self.finalize().into().into()
+    }
+}
+
 /// A hasher state for multipart ETag checksum calculation compatible with [Amazon S3's multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums).
 #[derive(Debug)]
 pub struct ETagHasherMulti<H> {
@@ -59,9 +78,10 @@ impl<H: Md5Hasher> ETagHasherMulti<H> {
             current_capacity: chunksize.into(),
         }
     }
+}
 
-    /// Updates the internal state by processing the data.
-    pub fn update(&mut self, data: impl AsRef<[u8]>) {
+impl<H: Md5Hasher> ETagHasher for ETagHasherMulti<H> {
+    fn update(&mut self, data: impl AsRef<[u8]>) {
         let mut buf = data.as_ref();
         assert!(self.current_capacity > 0);
         while buf.len() >= self.current_capacity {
@@ -83,7 +103,7 @@ impl<H: Md5Hasher> ETagHasherMulti<H> {
     /// Note that this method returns a non-multipart ETag if this hasher has not consumed any
     /// byte. This is because awscli does not accept zero multipart_threshold, and thus multipart
     /// uploading is not applicable to an empty file.
-    pub fn finalize(mut self) -> ETag {
+    fn finalize(mut self) -> ETag {
         assert!(self.current_capacity <= self.chunksize.into());
         if self.current_capacity < self.chunksize.into() {
             self.n_chunks += 1;
