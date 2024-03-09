@@ -214,6 +214,13 @@ mod md5_impl {
             self.0.digest_final(&mut buffer).expect("libssl error");
             buffer
         }
+
+        fn finalize_reset(&mut self) -> Self::Output {
+            let mut buffer = [0; 16];
+            self.0.digest_final(&mut buffer).expect("libssl error");
+            self.0.digest_init(Md::md5()).expect("libssl error");
+            buffer
+        }
     }
 }
 
