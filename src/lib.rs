@@ -20,24 +20,6 @@ pub trait Md5Hasher: Default {
     }
 }
 
-#[cfg(feature = "md-5")]
-#[cfg_attr(docsrs, doc(cfg(feature = "md-5")))]
-impl Md5Hasher for md5::Md5 {
-    type Output = md5::digest::Output<Self>;
-
-    fn update(&mut self, data: impl AsRef<[u8]>) {
-        md5::Digest::update(self, data)
-    }
-
-    fn finalize(self) -> Self::Output {
-        md5::Digest::finalize(self)
-    }
-
-    fn finalize_reset(&mut self) -> Self::Output {
-        md5::Digest::finalize_reset(self)
-    }
-}
-
 /// A trait for ETag hasher states.
 pub trait ETagHasher {
     /// Updates the internal state by processing the data.
@@ -142,6 +124,70 @@ impl From<[u8; 16]> for ETag {
         Self {
             digest,
             n_chunks: None,
+        }
+    }
+}
+
+#[cfg(feature = "md-5")]
+#[cfg_attr(docsrs, doc(cfg(feature = "md-5")))]
+impl Md5Hasher for md5::Md5 {
+    type Output = md5::digest::Output<Self>;
+
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        md5::Digest::update(self, data)
+    }
+
+    fn finalize(self) -> Self::Output {
+        md5::Digest::finalize(self)
+    }
+
+    fn finalize_reset(&mut self) -> Self::Output {
+        md5::Digest::finalize_reset(self)
+    }
+}
+
+#[cfg(feature = "openssl")]
+pub use openssl_bindings::OpensslMd5;
+
+#[cfg(feature = "openssl")]
+#[cfg_attr(docsrs, doc(cfg(feature = "openssl")))]
+mod openssl_bindings {
+    use openssl::{md::Md, md_ctx::MdCtx};
+
+    use super::Md5Hasher;
+
+    /// A wrapper for OpenSSL's `EVP_MD_CTX` object to implement [`Md5Hasher`].
+    ///
+    /// Note that implemented trait methods of this type may panic if the underlying OpenSSL
+    /// functions return an error.
+    pub struct OpensslMd5(MdCtx);
+
+    impl Default for OpensslMd5 {
+        fn default() -> Self {
+            let mut ctx = MdCtx::new().expect("openssl error");
+            ctx.digest_init(Md::md5()).expect("openssl error");
+            Self(ctx)
+        }
+    }
+
+    impl Md5Hasher for OpensslMd5 {
+        type Output = [u8; 16];
+
+        fn update(&mut self, data: impl AsRef<[u8]>) {
+            self.0.digest_update(data.as_ref()).expect("openssl error");
+        }
+
+        fn finalize(mut self) -> Self::Output {
+            let mut buffer = [0; 16];
+            self.0.digest_final(&mut buffer).expect("openssl error");
+            buffer
+        }
+
+        fn finalize_reset(&mut self) -> Self::Output {
+            let mut buffer = [0; 16];
+            self.0.digest_final(&mut buffer).expect("openssl error");
+            self.0.digest_init(Md::md5()).expect("openssl error");
+            buffer
         }
     }
 }

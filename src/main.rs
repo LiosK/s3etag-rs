@@ -170,10 +170,10 @@ fn process_file(
 
         let mut file = file?;
         if file.metadata()?.len() < config.threshold.into() {
-            let hasher = md5_impl::Md5::default();
+            let hasher = Md5::default();
             compute_etag(hasher, &mut file, buffer)
         } else {
-            let hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
+            let hasher = ETagHasherMulti::<Md5>::new(config.chunksize);
             compute_etag(hasher, &mut file, buffer)
         }
     }?;
@@ -189,42 +189,7 @@ fn process_file(
 }
 
 #[cfg(feature = "openssl")]
-mod md5_impl {
-    use openssl::{md::Md, md_ctx::MdCtx};
-
-    pub struct Md5(MdCtx);
-
-    impl Default for Md5 {
-        fn default() -> Self {
-            let mut ctx = MdCtx::new().expect("libssl error");
-            ctx.digest_init(Md::md5()).expect("libssl error");
-            Self(ctx)
-        }
-    }
-
-    impl s3etag::Md5Hasher for Md5 {
-        type Output = [u8; 16];
-
-        fn update(&mut self, data: impl AsRef<[u8]>) {
-            self.0.digest_update(data.as_ref()).expect("libssl error");
-        }
-
-        fn finalize(mut self) -> Self::Output {
-            let mut buffer = [0; 16];
-            self.0.digest_final(&mut buffer).expect("libssl error");
-            buffer
-        }
-
-        fn finalize_reset(&mut self) -> Self::Output {
-            let mut buffer = [0; 16];
-            self.0.digest_final(&mut buffer).expect("libssl error");
-            self.0.digest_init(Md::md5()).expect("libssl error");
-            buffer
-        }
-    }
-}
+pub use s3etag::OpensslMd5 as Md5;
 
 #[cfg(not(feature = "openssl"))]
-mod md5_impl {
-    pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
-}
+pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
