@@ -53,15 +53,15 @@ fn main() -> process::ExitCode {
     let mut files = matches
         .get_many::<path::PathBuf>("files")
         .unwrap()
-        .map(|filename| (filename, open_and_fadvise_seq(filename)))
-        .fuse();
+        .fuse()
+        .map(|filename| (open_and_fadvise_seq(filename), filename));
 
     let mut next = files.next();
-    while let Some((filename, file)) = next {
+    while let Some((result_file, filename)) = next {
         // announce the next file before processing the current one
         next = files.next();
 
-        if let Err(e) = process_file(filename, file, &config, &mut writer, &mut buffer) {
+        if let Err(e) = process_file(result_file, filename, &config, &mut writer, &mut buffer) {
             exit_code = process::ExitCode::FAILURE;
             eprintln!("error: {}: {}", filename.display(), e);
         }
@@ -73,6 +73,7 @@ fn main() -> process::ExitCode {
 /// Parses the threshold argument.
 fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(0) => return Err("cannot parse integer".into()),
         None => (s, Ok(1u64)),
         Some(pos) => (
             &s[..pos],
@@ -81,18 +82,19 @@ fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + 
                 "MB" => Ok(1 << 20),
                 "GB" => Ok(1 << 30),
                 "TB" => Ok(1 << 40),
-                _ => Err("unknown size suffix".to_owned()),
+                _ => Err("unknown size suffix"),
             },
         ),
     };
     num.parse::<NonZeroU64>()?
         .checked_mul(unit?.try_into()?)
-        .ok_or_else(|| "too large threshold".to_owned().into())
+        .ok_or_else(|| "too large threshold".into())
 }
 
 /// Parses the chunksize argument.
 fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(0) => return Err("cannot parse integer".into()),
         None => (s, Ok(1usize)),
         Some(pos) => (
             &s[..pos],
@@ -101,13 +103,13 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
                 "MB" => Ok(1 << 20),
                 "GB" => Ok(1 << 30),
                 "TB" => Ok(1 << 40),
-                _ => Err("unknown size suffix".to_owned()),
+                _ => Err("unknown size suffix"),
             },
         ),
     };
     num.parse::<NonZeroUsize>()?
         .checked_mul(unit?.try_into()?)
-        .ok_or_else(|| "too large chunksize".to_owned().into())
+        .ok_or_else(|| "too large chunksize".into())
 }
 
 /// Opens a file and calls `posix_fadvise` with `POSIX_FADV_SEQUENTIAL`.
@@ -146,8 +148,8 @@ struct Config {
 
 /// Computes and prints the ETag for a file.
 fn process_file(
+    result_file: io::Result<fs::File>,
     filename: &path::Path,
-    file: io::Result<fs::File>,
     config: &Config,
     writer: &mut impl io::Write,
     buffer: &mut [u8],
@@ -168,12 +170,12 @@ fn process_file(
             }
         }
 
-        let mut file = file?;
+        let mut file = result_file?;
         if file.metadata()?.len() < config.threshold.into() {
-            let hasher = md5_impl::Md5::default();
+            let hasher = Md5::default();
             compute_etag(hasher, &mut file, buffer)
         } else {
-            let hasher = ETagHasherMulti::<md5_impl::Md5>::new(config.chunksize);
+            let hasher = ETagHasherMulti::<Md5>::new(config.chunksize);
             compute_etag(hasher, &mut file, buffer)
         }
     }?;
@@ -189,42 +191,7 @@ fn process_file(
 }
 
 #[cfg(feature = "openssl")]
-mod md5_impl {
-    use openssl::{md::Md, md_ctx::MdCtx};
-
-    pub struct Md5(MdCtx);
-
-    impl Default for Md5 {
-        fn default() -> Self {
-            let mut ctx = MdCtx::new().expect("libssl error");
-            ctx.digest_init(Md::md5()).expect("libssl error");
-            Self(ctx)
-        }
-    }
-
-    impl s3etag::Md5Hasher for Md5 {
-        type Output = [u8; 16];
-
-        fn update(&mut self, data: impl AsRef<[u8]>) {
-            self.0.digest_update(data.as_ref()).expect("libssl error");
-        }
-
-        fn finalize(mut self) -> Self::Output {
-            let mut buffer = [0; 16];
-            self.0.digest_final(&mut buffer).expect("libssl error");
-            buffer
-        }
-
-        fn finalize_reset(&mut self) -> Self::Output {
-            let mut buffer = [0; 16];
-            self.0.digest_final(&mut buffer).expect("libssl error");
-            self.0.digest_init(Md::md5()).expect("libssl error");
-            buffer
-        }
-    }
-}
+use s3etag::OpensslMd5 as Md5;
 
 #[cfg(not(feature = "openssl"))]
-mod md5_impl {
-    pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
-}
+use md5::Md5; // Either `openssl` or `md-5` must be enabled.
