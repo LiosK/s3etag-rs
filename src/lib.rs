@@ -159,7 +159,7 @@ mod openssl_bindings {
     /// A wrapper for OpenSSL's `EVP_MD_CTX` object to implement [`Md5Hasher`].
     ///
     /// Note that implemented trait methods of this type may panic if the underlying OpenSSL
-    /// functions return an error.
+    /// functions unexpectedly return an error.
     pub struct OpensslMd5(MdCtx);
 
     impl Default for OpensslMd5 {

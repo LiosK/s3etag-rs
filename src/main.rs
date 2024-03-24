@@ -53,15 +53,15 @@ fn main() -> process::ExitCode {
     let mut files = matches
         .get_many::<path::PathBuf>("files")
         .unwrap()
-        .map(|filename| (filename, open_and_fadvise_seq(filename)))
-        .fuse();
+        .fuse()
+        .map(|filename| (open_and_fadvise_seq(filename), filename));
 
     let mut next = files.next();
-    while let Some((filename, file)) = next {
+    while let Some((result_file, filename)) = next {
         // announce the next file before processing the current one
         next = files.next();
 
-        if let Err(e) = process_file(filename, file, &config, &mut writer, &mut buffer) {
+        if let Err(e) = process_file(result_file, filename, &config, &mut writer, &mut buffer) {
             exit_code = process::ExitCode::FAILURE;
             eprintln!("error: {}: {}", filename.display(), e);
         }
@@ -146,8 +146,8 @@ struct Config {
 
 /// Computes and prints the ETag for a file.
 fn process_file(
+    result_file: io::Result<fs::File>,
     filename: &path::Path,
-    file: io::Result<fs::File>,
     config: &Config,
     writer: &mut impl io::Write,
     buffer: &mut [u8],
@@ -168,7 +168,7 @@ fn process_file(
             }
         }
 
-        let mut file = file?;
+        let mut file = result_file?;
         if file.metadata()?.len() < config.threshold.into() {
             let hasher = Md5::default();
             compute_etag(hasher, &mut file, buffer)
@@ -189,7 +189,7 @@ fn process_file(
 }
 
 #[cfg(feature = "openssl")]
-pub use s3etag::OpensslMd5 as Md5;
+use s3etag::OpensslMd5 as Md5;
 
 #[cfg(not(feature = "openssl"))]
-pub use md5::Md5; // Either `openssl` or `md-5` must be enabled.
+use md5::Md5; // Either `openssl` or `md-5` must be enabled.
