@@ -73,6 +73,7 @@ fn main() -> process::ExitCode {
 /// Parses the threshold argument.
 fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(0) => return Err("cannot parse integer".into()),
         None => (s, Ok(1u64)),
         Some(pos) => (
             &s[..pos],
@@ -81,18 +82,19 @@ fn parse_threshold(s: &str) -> Result<NonZeroU64, Box<dyn error::Error + Sync + 
                 "MB" => Ok(1 << 20),
                 "GB" => Ok(1 << 30),
                 "TB" => Ok(1 << 40),
-                _ => Err("unknown size suffix".to_owned()),
+                _ => Err("unknown size suffix"),
             },
         ),
     };
     num.parse::<NonZeroU64>()?
         .checked_mul(unit?.try_into()?)
-        .ok_or_else(|| "too large threshold".to_owned().into())
+        .ok_or_else(|| "too large threshold".into())
 }
 
 /// Parses the chunksize argument.
 fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync + Send>> {
     let (num, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(0) => return Err("cannot parse integer".into()),
         None => (s, Ok(1usize)),
         Some(pos) => (
             &s[..pos],
@@ -101,13 +103,13 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
                 "MB" => Ok(1 << 20),
                 "GB" => Ok(1 << 30),
                 "TB" => Ok(1 << 40),
-                _ => Err("unknown size suffix".to_owned()),
+                _ => Err("unknown size suffix"),
             },
         ),
     };
     num.parse::<NonZeroUsize>()?
         .checked_mul(unit?.try_into()?)
-        .ok_or_else(|| "too large chunksize".to_owned().into())
+        .ok_or_else(|| "too large chunksize".into())
 }
 
 /// Opens a file and calls `posix_fadvise` with `POSIX_FADV_SEQUENTIAL`.
