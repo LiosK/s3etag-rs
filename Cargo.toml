@@ -13,7 +13,7 @@ default = ["md-5"]
 
 [dependencies]
 arrayvec = "0.7"
-clap = "4.5"
+clap = { version = "4.5", features = ["env"] }
 nix = { version = "0.28", features = ["fs"] }
 
 md-5 = { version = "0.10", optional = true }

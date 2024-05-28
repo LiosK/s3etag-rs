@@ -7,8 +7,8 @@ Arguments:
   <FILE>...  filenames
 
 Options:
-      --threshold <SIZE>  multipart_threshold used for upload in bytes or with a size suffix KB, MB, GB, or TB [default: 8MB]
-      --chunksize <SIZE>  multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB [default: 8MB]
+      --threshold <SIZE>  multipart_threshold used for upload in bytes or with a size suffix KB, MB, GB, or TB [env: S3ETAG_THRESHOLD=] [default: 8MB]
+      --chunksize <SIZE>  multipart_chunksize used for upload in bytes or with a size suffix KB, MB, GB, or TB [env: S3ETAG_CHUNKSIZE=] [default: 8MB]
   -h, --help              Print help
   -V, --version           Print version
 ```

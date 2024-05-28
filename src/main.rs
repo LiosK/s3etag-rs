@@ -28,6 +28,7 @@ fn main() -> process::ExitCode {
                 .long("threshold")
                 .value_name("SIZE")
                 .value_parser(parse_threshold)
+                .env("S3ETAG_THRESHOLD")
                 .default_value("8MB")
                 .help(THRESHOLD_HELP),
         )
@@ -36,6 +37,7 @@ fn main() -> process::ExitCode {
                 .long("chunksize")
                 .value_name("SIZE")
                 .value_parser(parse_chunksize)
+                .env("S3ETAG_CHUNKSIZE")
                 .default_value("8MB")
                 .help(CHUNKSIZE_HELP),
         )
