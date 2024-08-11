@@ -118,8 +118,11 @@ fn parse_chunksize(s: &str) -> Result<NonZeroUsize, Box<dyn error::Error + Sync 
 fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
     let file = fs::File::open(filename)?;
 
+    // Conditions are copied from the `nix::fcntl::posix_fadvise()` source code, except that the
+    // `linux_android` alias is expanded to the two `target_os` conditions.
     #[cfg(any(
-        linux_android,
+        target_os = "linux",
+        target_os = "android",
         target_os = "emscripten",
         target_os = "fuchsia",
         target_os = "wasi",
@@ -127,7 +130,7 @@ fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
         target_os = "freebsd"
     ))]
     if let Err(e) = nix::fcntl::posix_fadvise(
-        std::os::fd::AsRawFd::as_raw_fd(file),
+        std::os::fd::AsRawFd::as_raw_fd(&file),
         0,
         0,
         nix::fcntl::PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL,
