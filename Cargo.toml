@@ -10,14 +10,15 @@ publish = false
 
 [features]
 default = ["md-5"]
+md-5 = ["dep:md-5"]
+# Use libssl instead of Rust Crypto implementation of MD5.
+openssl = ["dep:openssl"]
 
 [dependencies]
 arrayvec = "0.7"
 clap = { version = "4.5", features = ["env"] }
-nix = { version = "0.29", features = ["fs"] }
-
 md-5 = { version = "0.10", optional = true }
-# Use libssl instead of Rust Crypto implementation of MD5.
+nix = { version = "0.29", features = ["fs"] }
 openssl = { version = "0.10", optional = true }
 
 [profile.release]
