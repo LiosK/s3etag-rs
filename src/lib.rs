@@ -1,8 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{fmt, mem, num::NonZeroUsize};
-
-use arrayvec::ArrayString;
+use std::{fmt, io, mem, num::NonZeroUsize, str};
 
 /// A trait that defines the minimum requirements for an underlying MD5 hasher.
 pub trait Md5Hasher: Default {
@@ -107,15 +105,18 @@ pub struct ETag {
 
 impl fmt::Display for ETag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use fmt::Write as _;
-        let mut buf = ArrayString::<64>::new();
+        use io::Write as _;
+        let mut buffer = [0u8; 64];
+        let mut writer = &mut buffer[..];
         for e in self.digest {
-            write!(buf, "{:02x}", e)?;
+            write!(writer, "{:02x}", e).map_err(|_| fmt::Error)?;
         }
         if let Some(n) = self.n_chunks {
-            write!(buf, "-{}", n)?;
+            write!(writer, "-{}", n).map_err(|_| fmt::Error)?;
         }
-        fmt::Display::fmt(buf.as_str(), f)
+        let remaining = writer.len();
+        let written = &buffer[..(buffer.len() - remaining)];
+        fmt::Display::fmt(str::from_utf8(written).map_err(|_| fmt::Error)?, f)
     }
 }
 

@@ -15,7 +15,6 @@ md-5 = ["dep:md-5"]
 openssl = ["dep:openssl"]
 
 [dependencies]
-arrayvec = "0.7"
 clap = { version = "4.5", features = ["env"] }
 md-5 = { version = "0.10", optional = true }
 nix = { version = "0.29", features = ["fs"] }
