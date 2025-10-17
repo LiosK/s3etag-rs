@@ -3,7 +3,7 @@ name = "s3etag"
 version = "0.4.4"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
-edition = "2021"
+edition = "2024"
 description = "Compute Amazon S3 ETags"
 repository = "https://github.com/LiosK/s3etag-rs"
 publish = false
@@ -17,7 +17,7 @@ openssl = ["dep:openssl"]
 [dependencies]
 clap = { version = "4.5", features = ["env"] }
 md-5 = { version = "0.10", optional = true }
-nix = { version = "0.29", features = ["fs"] }
+nix = { version = "0.30", features = ["fs"] }
 openssl = { version = "0.10", optional = true }
 
 [profile.release]
