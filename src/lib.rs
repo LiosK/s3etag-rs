@@ -130,7 +130,6 @@ impl From<[u8; 16]> for ETag {
 }
 
 #[cfg(feature = "md-5")]
-#[cfg_attr(docsrs, doc(cfg(feature = "md-5")))]
 impl Md5Hasher for md5::Md5 {
     type Output = md5::digest::Output<Self>;
 
@@ -151,7 +150,6 @@ impl Md5Hasher for md5::Md5 {
 pub use openssl_bindings::OpensslMd5;
 
 #[cfg(feature = "openssl")]
-#[cfg_attr(docsrs, doc(cfg(feature = "openssl")))]
 mod openssl_bindings {
     use openssl::{md::Md, md_ctx::MdCtx};
 
