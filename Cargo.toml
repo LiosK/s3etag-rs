@@ -1,6 +1,6 @@
 [package]
 name = "s3etag"
-version = "0.4.4"
+version = "0.4.5-beta.0"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2024"

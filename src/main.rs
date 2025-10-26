@@ -130,7 +130,7 @@ fn open_and_fadvise_seq(filename: &path::Path) -> io::Result<fs::File> {
         target_os = "freebsd"
     ))]
     if let Err(e) = nix::fcntl::posix_fadvise(
-        std::os::fd::AsRawFd::as_raw_fd(&file),
+        &file,
         0,
         0,
         nix::fcntl::PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL,
